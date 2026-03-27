@@ -1,78 +1,82 @@
-# env/sim_futures_env.py
+%%writefile /content/AI_SWING/env/sim_futures_env.py
 import numpy as np
+import pandas as pd
+from env.reward_func import shape_reward
 
-class FuturesTradingEnv:
-    """
-    A simplified simulation environment for futures trading.
-    This class mimics the basic structure of an OpenAI Gym environment.
-    """
-    def __init__(self, df, initial_balance=10000, leverage=3, commission=0.0004):
-        """
-        Initialize the trading environment.
-        
-        Args:
-            df (pd.DataFrame): DataFrame containing the market data (prices, indicators).
-            initial_balance (float): The starting account balance.
-            leverage (int): The leverage to use for trades.
-            commission (float): The trading commission fee.
-        """
+class SimFuturesEnv:
+    def __init__(self, df, initial_balance=100, leverage=3, commission=0.0004):
         self.df = df
         self.initial_balance = initial_balance
         self.leverage = leverage
         self.commission = commission
-        
-        # State space would be the financial data at a given time step
-        self.state_shape = (len(df.columns),) 
-        # Action space: 0: Hold, 1: Long, 2: Short
-        self.action_space_n = 3 
-
         self.reset()
 
     def reset(self):
-        """
-        Resets the environment to its initial state.
-        
-        Returns:
-            np.array: The initial state of the environment.
-        """
         self.current_step = 0
-        self.balance = self.initial_balance
-        self.position = 0  # 0: None, 1: Long, -1: Short
+        self.capital = self.initial_balance
+        self.position = 0  # 0: None, 1: Long, 2: Short (Khớp với Agent)
         self.entry_price = 0
         self.done = False
         return self._get_state()
 
     def _get_state(self):
-        """
-        Gets the state observation for the current time step.
-        """
         return self.df.iloc[self.current_step].values
 
     def step(self, action):
-        """
-        Executes one time step within the environment.
-        
-        Args:
-            action (int): The action to take (0: Hold, 1: Long, 2: Short).
+        # Action Map: 0: Short, 1: Hold (None), 2: Long
+        if self.done: return self._get_state(), 0, True, {}
+
+        prev_capital = self.capital
+        current_price = self.df.iloc[self.current_step]['close']
+        fee_paid = 0.0
+        trade_closed = False
+
+        # 1. LOGIC GIAO DỊCH
+        # Nếu đang có lệnh mà action khác đi -> Đóng lệnh cũ
+        if self.position != 0 and action != self.position:
+            # Tính toán PnL khi đóng lệnh
+            if self.position == 2: # Đóng Long
+                pnl_percent = (current_price - self.entry_price) / self.entry_price
+            elif self.position == 0: # Đóng Short
+                pnl_percent = (self.entry_price - current_price) / self.entry_price
             
-        Returns:
-            tuple: A tuple containing (next_state, reward, done, info).
-        """
-        if self.done:
-            raise Exception("Environment has finished. Please reset.")
+            pnl_amount = pnl_percent * self.capital * self.leverage
+            self.capital += pnl_amount
             
-        # Placeholder for reward calculation and state transition
-        # This logic would be complex, involving PnL calculation, fees, etc.
-        reward = 0
-        
-        # Move to the next time step
+            # Trừ phí đóng lệnh
+            fee = self.capital * self.commission
+            self.capital -= fee
+            fee_paid += fee
+            
+            self.position = 0
+            trade_closed = True
+
+        # Nếu đang trống lệnh mà muốn vào lệnh mới
+        if self.position == 0 and action != 1:
+            self.position = action
+            self.entry_price = current_price
+            # Trừ phí mở lệnh
+            fee = self.capital * self.commission
+            self.capital -= fee
+            fee_paid += fee
+
+        # 2. DI CHUYỂN BƯỚC THỜI GIAN
         self.current_step += 1
-        
-        # Check if the episode is finished
         if self.current_step >= len(self.df) - 1:
             self.done = True
-            
-        next_state = self._get_state()
-        info = {}  # For debugging info
-        
-        return next_state, reward, self.done, info
+
+        # 3. TÍNH TOÁN PHẦN THƯỞNG (REWARD)
+        current_pnl = self.capital - prev_capital
+        reward = shape_reward(
+            pnl=current_pnl, 
+            trade_closed=trade_closed, 
+            is_win=(current_pnl > 0),
+            fee_paid=fee_paid
+        )
+
+        # Bảo vệ tài khoản: Nếu cháy túi thì dừng
+        if self.capital <= 0:
+            self.capital = 0
+            self.done = True
+
+        return self._get_state(), reward, self.done, {"capital": self.capital}
