@@ -1,143 +1,67 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.distributions import Categorical
 
-# ==========================================
-# 1. BỘ NHỚ TẠM THỜI (ROLLOUT BUFFER)
-# ==========================================
-class RolloutBuffer:
-    def __init__(self):
-        self.actions = []
-        self.states = []
-        self.logprobs = []
-        self.rewards = []
-        self.is_terminals = []
-    
-    def clear(self):
-        del self.actions[:]
-        del self.states[:]
-        del self.logprobs[:]
-        del self.rewards[:]
-        del self.is_terminals[:]
+# Import các chuyên gia từ folder experts
+from ai_core.experts.macro_trend_gru import MacroTrendGRU
+from ai_core.experts.momentum_cnn import MomentumCNNExpert
+from ai_core.experts.risk_vol_mlp import RiskVolatilityMLP
 
-# ==========================================
-# 2. KIẾN TRÚC MẠNG NƠ-RON (ACTOR-CRITIC)
-# ==========================================
-class ActorCritic(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim=256):
-        super(ActorCritic, self).__init__()
-
-        # Shared Feature Extractor (Phần thân chung)
-        self.feature_layer = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU()
-        )
+class ActorCriticMoE(nn.Module):
+    def __init__(self, state_dim, action_dim, seq_len=30):
+        super(ActorCriticMoE, self).__init__()
+        self.seq_len = seq_len
         
-        # Actor: Quyết định hành động (Long/Short/Hold)
+        # 1. Khởi tạo các Chuyên gia (Experts)
+        self.trend_expert = MacroTrendGRU(input_dim=state_dim, hidden_dim=64, n_layers=2, output_dim=32)
+        self.momentum_expert = MomentumCNNExpert(input_channels=state_dim, num_classes=32)
+        self.risk_expert = RiskVolatilityMLP(input_dim=state_dim, output_dim=16)
+        
+        # 2. Gating Network (Mạng cổng) - Quyết định trọng số của từng chuyên gia
+        # Tổng hợp: 32 (Trend) + 32 (Momentum) + 16 (Risk) = 80 features
+        combined_dim = 32 + 32 + 16
+        
         self.actor = nn.Sequential(
-            nn.Linear(hidden_dim, action_dim),
+            nn.Linear(combined_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, action_dim),
             nn.Softmax(dim=-1)
         )
         
-        # Critic: Đánh giá giá trị của trạng thái hiện tại (Value)
-        self.critic = nn.Linear(hidden_dim, 1)
+        self.critic = nn.Sequential(
+            nn.Linear(combined_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1)
+        )
 
-    def forward(self, state):
-        features = self.feature_layer(state)
-        return self.actor(features), self.critic(features)
+    def forward(self, x):
+        # x shape: (batch, seq_len, state_dim)
+        
+        # Expert 1: GRU soi xu hướng
+        h0 = torch.zeros(2, x.size(0), 64).to(x.device)
+        trend_out, _ = self.trend_expert(x, h0) # (batch, 32)
+        
+        # Expert 2: CNN soi hình thái nến (Cần permute sang [batch, channels, seq])
+        x_cnn = x.permute(0, 2, 1) 
+        momentum_out = self.momentum_expert(x_cnn) # (batch, 32)
+        
+        # Expert 3: MLP soi rủi ro (Chỉ lấy nến cuối cùng)
+        risk_out = self.risk_expert(x[:, -1, :]) # (batch, 16)
+        
+        # Hợp thể ý kiến các chuyên gia
+        combined = torch.cat((trend_out, momentum_out, risk_out), dim=1)
+        
+        return self.actor(combined), self.critic(combined)
 
     def select_action(self, state):
+        # state: (1, seq_len, state_dim)
         action_probs, _ = self.forward(state)
         dist = Categorical(action_probs)
         action = dist.sample()
-        action_logprob = dist.log_prob(action)
-        return action.detach(), action_logprob.detach()
+        return action.detach(), dist.log_prob(action).detach()
 
     def evaluate(self, state, action):
         action_probs, state_values = self.forward(state)
         dist = Categorical(action_probs)
-        action_logprobs = dist.log_prob(action)
-        dist_entropy = dist.entropy()
-        return action_logprobs, state_values, dist_entropy
-
-# ==========================================
-# 3. BỘ ĐIỀU KHIỂN PPO (AGENT)
-# ==========================================
-class PPOAgent:
-    def __init__(self, state_dim, action_dim, lr=0.0003, gamma=0.99, K_epochs=4, eps_clip=0.2):
-        self.gamma = gamma
-        self.eps_clip = eps_clip
-        self.K_epochs = K_epochs
-        
-        self.buffer = RolloutBuffer() # Tên là buffer để tránh nhầm lẫn
-        
-        self.policy = ActorCritic(state_dim, action_dim).to(torch.device('cpu'))
-        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=lr)
-        
-        self.policy_old = ActorCritic(state_dim, action_dim).to(torch.device('cpu'))
-        self.policy_old.load_state_dict(self.policy.state_dict())
-        
-        self.MseLoss = nn.MSELoss()
-
-    def select_action(self, state):
-        # state ở đây nên là Tensor đã chuẩn bị sẵn từ Cell 3
-        with torch.no_grad():
-            action, action_logprob = self.policy_old.select_action(state)
-        
-        # Lưu vào buffer ngay lập tức để tiện quản lý
-        self.buffer.states.append(state)
-        self.buffer.actions.append(action)
-        self.buffer.logprobs.append(action_logprob)
-        
-        return action.item(), action_logprob
-
-    def update(self):
-        if not self.buffer.rewards: return # Nếu chưa có dữ liệu thì không update
-
-        # 1. Tính toán Monte Carlo rewards (Discounted rewards)
-        rewards = []
-        discounted_reward = 0
-        for reward, is_terminal in zip(reversed(self.buffer.rewards), reversed(self.buffer.is_terminals)):
-            if is_terminal:
-                discounted_reward = 0
-            discounted_reward = reward + (self.gamma * discounted_reward)
-            rewards.insert(0, discounted_reward)
-            
-        # Chuẩn hóa Rewards (Giúp AI học ổn định hơn)
-        rewards = torch.tensor(rewards, dtype=torch.float32)
-        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-7)
-
-        # Chuyển đổi list sang tensors
-        old_states = torch.squeeze(torch.stack(self.buffer.states, dim=0)).detach()
-        old_actions = torch.squeeze(torch.stack(self.buffer.actions, dim=0)).detach()
-        old_logprobs = torch.squeeze(torch.stack(self.buffer.logprobs, dim=0)).detach()
-
-        # 2. Tối ưu hóa Policy trong K epochs
-        for _ in range(self.K_epochs):
-            # Đánh giá hành động cũ với Policy mới
-            logprobs, state_values, dist_entropy = self.policy.evaluate(old_states, old_actions)
-            state_values = torch.squeeze(state_values)
-            
-            # Tính tỉ lệ (pi_theta / pi_theta_old)
-            ratios = torch.exp(logprobs - old_logprobs.detach())
-
-            # Tính Surrogate Loss
-            advantages = rewards - state_values.detach()   
-            surr1 = ratios * advantages
-            surr2 = torch.clamp(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
-
-            # Tính Loss tổng hợp
-            loss = -torch.min(surr1, surr2) + 0.5 * self.MseLoss(state_values, rewards) - 0.01 * dist_entropy
-            
-            # Cập nhật Gradient
-            self.optimizer.zero_grad()
-            loss.mean().backward()
-            self.optimizer.step()
-            
-        # Sao chép trọng số mới sang Policy cũ
-        self.policy_old.load_state_dict(self.policy.state_dict())
-        
-        # Xóa sạch bộ nhớ để chuẩn bị cho Epoch tiếp theo
-        self.buffer.clear()
+        return dist.log_prob(action), state_values.squeeze(), dist.entropy()
