@@ -147,12 +147,11 @@ def send_telegram_alert(message_text):
 # ==========================================
 def start_listening(scan_func=None):
     """
-    Hàm này sẽ được chạy ở một luồng (Thread) riêng biệt.
+    Hàm này sẽ chạy ở một luồng (Thread) riêng biệt.
     scan_func: Là hàm chứa logic kéo API Binance + Đưa vào MoE để dự đoán.
     """
     global _ai_scan_callback
     _ai_scan_callback = scan_func
     
-    print("🤖 Tín hiệu kết nối Telegram: XANH. Đang lắng nghe lệnh...")
-    # infinity_polling giúp bot tự động thử lại kết nối nếu rớt mạng WiFi
+    print("[BOT] Telegram Bot started. Listening for commands...")
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
