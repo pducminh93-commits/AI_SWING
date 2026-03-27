@@ -1,72 +1,35 @@
-# env/reward_func.py
+import numpy as np
 
-def calculate_simple_reward(previous_balance, current_balance, position_duration):
+def calculate_simple_reward(previous_balance, current_balance):
     """
-    A simple reward function based on profit and loss (PnL).
-    
-    Args:
-        previous_balance (float): Account balance at the previous time step.
-        current_balance (float): Account balance at the current time step.
-        position_duration (int): Number of time steps the current position has been held.
-        
-    Returns:
-        float: The calculated reward.
+    Thưởng dựa trên biến động số dư (PnL ròng).
     """
-    pnl = current_balance - previous_balance
-    
-    # Simple reward is just the PnL
+    return current_balance - previous_balance
+
+def shape_reward(pnl, trade_closed=False, is_win=False, fee_paid=0.0):
+    """
+    Hàm thưởng tối ưu cho Swing Trading:
+    1. Thưởng PnL thực tế.
+    2. Phạt nặng phí giao dịch để AI không spam lệnh.
+    3. Thưởng thêm khi chốt lời thành công.
+    """
+    # Gốc vẫn là PnL (Lợi nhuận thực tế)
     reward = pnl
     
-    return reward
-
-def calculate_sharpe_ratio_reward(returns, risk_free_rate=0.0):
-    """
-    A reward function based on the Sharpe ratio of returns.
-    This encourages high returns while penalizing high volatility.
+    # 1. PHẠT PHÍ GIAO DỊCH: Đây là quan trọng nhất để dừng spam lệnh
+    if fee_paid > 0:
+        reward -= (fee_paid * 2.0) # Phạt gấp đôi phí để AI trân trọng mỗi lần vào lệnh
     
-    Args:
-        returns (list or np.array): A series of returns from trades.
-        risk_free_rate (float): The risk-free rate of return.
-        
-    Returns:
-        float: The Sharpe ratio, which can be used as a reward.
-    """
-    if len(returns) < 2:
-        return 0
-        
-    mean_return = np.mean(returns)
-    std_return = np.std(returns)
+    # 2. LOGIC CHỐT LỆNH (Chỉ thưởng/phạt khi thực sự đóng vị thế)
+    if trade_closed:
+        if is_win:
+            reward += 1.5  # Thưởng thêm 1.5 điểm nếu chốt lời
+        else:
+            reward -= 2.0  # Phạt nặng 2.0 điểm nếu để lỗ (Cắt lỗ chậm)
+            
+    # 3. PHẠT GIỮ LỆNH QUÁ LÂU (Holding Penalty)
+    # Thay vì phạt pnl == 0, ta chỉ phạt một lượng cực nhỏ (0.001) mỗi bước 
+    # để AI không "ngâm" lệnh quá 1 tuần mà không làm gì.
+    reward -= 0.001 
     
-    if std_return == 0:
-        return 0 # Avoid division by zero
-        
-    sharpe_ratio = (mean_return - risk_free_rate) / std_return
-    return sharpe_ratio
-
-def shape_reward(pnl, holding_penalty=-0.01, win_bonus=1.0, loss_penalty=-1.5):
-    """
-    Shapes the reward to encourage desired agent behavior.
-    
-    Args:
-        pnl (float): The profit or loss for the current step.
-        holding_penalty (float): A small penalty for each step a position is held.
-        win_bonus (float): A bonus applied when a trade is closed with a profit.
-        loss_penalty (float): A penalty applied when a trade is closed with a loss.
-        
-    Returns:
-        float: The shaped reward.
-    """
-    reward = pnl
-    
-    # Apply a small penalty for just holding a position to encourage action
-    if pnl == 0: # Assuming no PnL means holding
-        reward += holding_penalty
-        
-    # Apply bonuses or penalties for closing trades (this logic would be in the env)
-    # e.g., if trade_closed:
-    #   if pnl > 0:
-    #       reward += win_bonus
-    #   else:
-    #       reward += loss_penalty
-           
     return reward
