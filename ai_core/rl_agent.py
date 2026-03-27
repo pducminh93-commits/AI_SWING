@@ -1,4 +1,3 @@
-%%writefile /content/AI_SWING/ai_core/rl_agent.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -19,7 +18,6 @@ class ActorCriticMoE(nn.Module):
         self.critic = nn.Sequential(nn.Linear(combined_dim, 64), nn.ReLU(), nn.Linear(64, 1))
 
     def forward(self, x):
-        # x: (batch, seq_len, state_dim)
         batch_size = x.size(0)
         h0 = torch.zeros(2, batch_size, 64).to(x.device)
         trend_out, _ = self.trend_expert(x, h0)
