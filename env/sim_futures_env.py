@@ -4,7 +4,7 @@ import pandas as pd
 from env.reward_func import shape_reward
 
 class SimFuturesEnv:
-    def __init__(self, df, initial_balance=100, leverage=3, commission=0.0004):
+    def __init__(self, df, initial_balance=100.0, leverage=3, commission=0.0004):
         self.df = df
         self.initial_balance = initial_balance
         self.leverage = leverage
@@ -14,16 +14,16 @@ class SimFuturesEnv:
     def reset(self):
         self.current_step = 0
         self.capital = self.initial_balance
-        self.position = 0  # 0: None, 1: Long, 2: Short (Khớp với Agent)
+        self.position = 1  # 0: Short, 1: Hold, 2: Long
         self.entry_price = 0
         self.done = False
         return self._get_state()
 
     def _get_state(self):
+        # Trả về toàn bộ hàng dữ liệu tại bước hiện tại
         return self.df.iloc[self.current_step].values
 
     def step(self, action):
-        # Action Map: 0: Short, 1: Hold (None), 2: Long
         if self.done: return self._get_state(), 0, True, {}
 
         prev_capital = self.capital
@@ -31,50 +31,37 @@ class SimFuturesEnv:
         fee_paid = 0.0
         trade_closed = False
 
-        # 1. LOGIC GIAO DỊCH
-        # Nếu đang có lệnh mà action khác đi -> Đóng lệnh cũ
-        if self.position != 0 and action != self.position:
-            # Tính toán PnL khi đóng lệnh
-            if self.position == 2: # Đóng Long
+        # Logic đóng lệnh và tính PnL
+        if self.position != 1 and action != self.position:
+            if self.position == 2: # Long
                 pnl_percent = (current_price - self.entry_price) / self.entry_price
-            elif self.position == 0: # Đóng Short
+            else: # Short
                 pnl_percent = (self.entry_price - current_price) / self.entry_price
             
-            pnl_amount = pnl_percent * self.capital * self.leverage
-            self.capital += pnl_amount
-            
-            # Trừ phí đóng lệnh
+            self.capital += pnl_percent * self.capital * self.leverage
             fee = self.capital * self.commission
             self.capital -= fee
             fee_paid += fee
-            
-            self.position = 0
+            self.position = 1
             trade_closed = True
 
-        # Nếu đang trống lệnh mà muốn vào lệnh mới
-        if self.position == 0 and action != 1:
+        # Logic mở lệnh mới
+        if self.position == 1 and action != 1:
             self.position = action
             self.entry_price = current_price
-            # Trừ phí mở lệnh
             fee = self.capital * self.commission
             self.capital -= fee
             fee_paid += fee
 
-        # 2. DI CHUYỂN BƯỚC THỜI GIAN
         self.current_step += 1
         if self.current_step >= len(self.df) - 1:
             self.done = True
 
-        # 3. TÍNH TOÁN PHẦN THƯỞNG (REWARD)
+        # Tính Reward
         current_pnl = self.capital - prev_capital
-        reward = shape_reward(
-            pnl=current_pnl, 
-            trade_closed=trade_closed, 
-            is_win=(current_pnl > 0),
-            fee_paid=fee_paid
-        )
+        reward = shape_reward(pnl=current_pnl, trade_closed=trade_closed, 
+                              is_win=(current_pnl > 0), fee_paid=fee_paid)
 
-        # Bảo vệ tài khoản: Nếu cháy túi thì dừng
         if self.capital <= 0:
             self.capital = 0
             self.done = True
