@@ -1,146 +1,143 @@
-# ai_core/rl_agent.py
 import torch
 import torch.nn as nn
 from torch.distributions import Categorical
 
+# ==========================================
+# 1. BỘ NHỚ TẠM THỜI (ROLLOUT BUFFER)
+# ==========================================
+class RolloutBuffer:
+    def __init__(self):
+        self.actions = []
+        self.states = []
+        self.logprobs = []
+        self.rewards = []
+        self.is_terminals = []
+    
+    def clear(self):
+        del self.actions[:]
+        del self.states[:]
+        del self.logprobs[:]
+        del self.rewards[:]
+        del self.is_terminals[:]
+
+# ==========================================
+# 2. KIẾN TRÚC MẠNG NƠ-RON (ACTOR-CRITIC)
+# ==========================================
 class ActorCritic(nn.Module):
-    """
-    An Actor-Critic network for Reinforcement Learning.
-    This network shares some layers between the actor (policy) and critic (value)
-    and then has separate final layers for each.
-    """
     def __init__(self, state_dim, action_dim, hidden_dim=256):
-        """
-        Initialize the Actor-Critic network.
-        
-        Args:
-            state_dim (int): Dimension of the state space.
-            action_dim (int): Dimension of the action space.
-            hidden_dim (int): Number of neurons in the hidden layers.
-        """
         super(ActorCritic, self).__init__()
 
-        # Shared layers
-        self.shared_layers = nn.Sequential(
+        # Shared Feature Extractor (Phần thân chung)
+        self.feature_layer = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU()
         )
         
-        # Actor specific layer
-        self.actor_head = nn.Linear(hidden_dim, action_dim)
+        # Actor: Quyết định hành động (Long/Short/Hold)
+        self.actor = nn.Sequential(
+            nn.Linear(hidden_dim, action_dim),
+            nn.Softmax(dim=-1)
+        )
         
-        # Critic specific layer
-        self.critic_head = nn.Linear(hidden_dim, 1)
+        # Critic: Đánh giá giá trị của trạng thái hiện tại (Value)
+        self.critic = nn.Linear(hidden_dim, 1)
 
     def forward(self, state):
-        """
-        A forward pass that returns both policy and value.
-        This is separated from the action selection logic.
-        """
-        shared_features = self.shared_layers(state)
-        action_logits = self.actor_head(shared_features)
-        state_value = self.critic_head(shared_features)
-        return action_logits, state_value
+        features = self.feature_layer(state)
+        return self.actor(features), self.critic(features)
 
     def select_action(self, state):
-        """
-        Selects an action based on the current policy (actor).
-        
-        Args:
-            state (torch.Tensor): The current state of the environment.
-        
-        Returns:
-            int: The action chosen by the policy.
-            torch.Tensor: The log probability of the chosen action.
-        """
-        action_logits, _ = self.forward(state)
-        dist = Categorical(logits=action_logits)
-        
+        action_probs, _ = self.forward(state)
+        dist = Categorical(action_probs)
         action = dist.sample()
-        log_prob = dist.log_prob(action)
-        
-        return action.item(), log_prob
+        action_logprob = dist.log_prob(action)
+        return action.detach(), action_logprob.detach()
 
     def evaluate(self, state, action):
-        action_logits, state_value = self.forward(state)
-        dist = Categorical(logits=action_logits)
-        
+        action_probs, state_values = self.forward(state)
+        dist = Categorical(action_probs)
         action_logprobs = dist.log_prob(action)
         dist_entropy = dist.entropy()
-        
-        return action_logprobs, torch.squeeze(state_value), dist_entropy
+        return action_logprobs, state_values, dist_entropy
 
-
+# ==========================================
+# 3. BỘ ĐIỀU KHIỂN PPO (AGENT)
+# ==========================================
 class PPOAgent:
-    """
-    A Proximal Policy Optimization (PPO) agent.
-    This class contains the logic for training the Actor-Critic network.
-    """
-    def __init__(self, state_dim, action_dim, lr, gamma, K_epochs, eps_clip):
+    def __init__(self, state_dim, action_dim, lr=0.0003, gamma=0.99, K_epochs=4, eps_clip=0.2):
         self.gamma = gamma
         self.eps_clip = eps_clip
         self.K_epochs = K_epochs
         
-        self.policy = ActorCritic(state_dim, action_dim)
+        self.buffer = RolloutBuffer() # Tên là buffer để tránh nhầm lẫn
+        
+        self.policy = ActorCritic(state_dim, action_dim).to(torch.device('cpu'))
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=lr)
-        self.policy_old = ActorCritic(state_dim, action_dim)
+        
+        self.policy_old = ActorCritic(state_dim, action_dim).to(torch.device('cpu'))
         self.policy_old.load_state_dict(self.policy.state_dict())
         
         self.MseLoss = nn.MSELoss()
 
     def select_action(self, state):
+        # state ở đây nên là Tensor đã chuẩn bị sẵn từ Cell 3
         with torch.no_grad():
-            state = torch.FloatTensor(state)
-            action_logits, _ = self.policy_old.forward(state)
-            dist = Categorical(logits=action_logits)
-            action = dist.sample()
-            log_prob = dist.log_prob(action)
-        return action.item(), log_prob
+            action, action_logprob = self.policy_old.select_action(state)
+        
+        # Lưu vào buffer ngay lập tức để tiện quản lý
+        self.buffer.states.append(state)
+        self.buffer.actions.append(action)
+        self.buffer.logprobs.append(action_logprob)
+        
+        return action.item(), action_logprob
 
-    def update(self, memory):
-        # Monte Carlo estimate of rewards:
+    def update(self):
+        if not self.buffer.rewards: return # Nếu chưa có dữ liệu thì không update
+
+        # 1. Tính toán Monte Carlo rewards (Discounted rewards)
         rewards = []
         discounted_reward = 0
-        for reward, is_terminal in zip(reversed(memory.rewards), reversed(memory.is_terminals)):
+        for reward, is_terminal in zip(reversed(self.buffer.rewards), reversed(self.buffer.is_terminals)):
             if is_terminal:
                 discounted_reward = 0
             discounted_reward = reward + (self.gamma * discounted_reward)
             rewards.insert(0, discounted_reward)
-        
-        # Normalizing the rewards
+            
+        # Chuẩn hóa Rewards (Giúp AI học ổn định hơn)
         rewards = torch.tensor(rewards, dtype=torch.float32)
         rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-7)
 
-        # convert list to tensor
-        old_states = torch.squeeze(torch.stack(memory.states, dim=0)).detach()
-        old_actions = torch.squeeze(torch.stack(memory.actions, dim=0)).detach()
-        old_logprobs = torch.squeeze(torch.stack(memory.logprobs, dim=0)).detach()
+        # Chuyển đổi list sang tensors
+        old_states = torch.squeeze(torch.stack(self.buffer.states, dim=0)).detach()
+        old_actions = torch.squeeze(torch.stack(self.buffer.actions, dim=0)).detach()
+        old_logprobs = torch.squeeze(torch.stack(self.buffer.logprobs, dim=0)).detach()
 
-        # Optimize policy for K epochs
+        # 2. Tối ưu hóa Policy trong K epochs
         for _ in range(self.K_epochs):
-            # Evaluating old actions and values
+            # Đánh giá hành động cũ với Policy mới
             logprobs, state_values, dist_entropy = self.policy.evaluate(old_states, old_actions)
-
-            # Finding the ratio (pi_theta / pi_theta__old)
+            state_values = torch.squeeze(state_values)
+            
+            # Tính tỉ lệ (pi_theta / pi_theta_old)
             ratios = torch.exp(logprobs - old_logprobs.detach())
 
-            # Finding Surrogate Loss
+            # Tính Surrogate Loss
             advantages = rewards - state_values.detach()   
             surr1 = ratios * advantages
             surr2 = torch.clamp(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
 
-            # final loss of clipped objective PPO
-            loss = -torch.min(surr1, surr2) + 0.5*self.MseLoss(state_values, rewards) - 0.01*dist_entropy
+            # Tính Loss tổng hợp
+            loss = -torch.min(surr1, surr2) + 0.5 * self.MseLoss(state_values, rewards) - 0.01 * dist_entropy
             
-            # take gradient step
+            # Cập nhật Gradient
             self.optimizer.zero_grad()
             loss.mean().backward()
             self.optimizer.step()
             
-        # Copy new weights into old policy
+        # Sao chép trọng số mới sang Policy cũ
         self.policy_old.load_state_dict(self.policy.state_dict())
         
-        # clear buffer
-        memory.clear()
+        # Xóa sạch bộ nhớ để chuẩn bị cho Epoch tiếp theo
+        self.buffer.clear()
