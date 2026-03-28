@@ -1,0 +1,29 @@
+# --- AI Core ---
+# PyTorch for building neural networks
+torch>=2.0.0
+# Pandas and NumPy for data manipulation
+pandas>=2.0.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+
+# --- Technical Analysis ---
+# TA-Lib for technical indicators
+TA-Lib>=0.6.8
+
+# --- API Connectors ---
+# For interacting with the Binance Futures API
+python-binance>=1.0.17
+# For interacting with the Telegram Bot API
+pyTelegramBotAPI>=4.8.0
+
+# --- Utilities ---
+# For loading environment variables from .env files
+python-dotenv>=1.0.0
+# For reading the YAML configuration file
+PyYAML>=6.0
+# For logging errors and events
+loguru>=0.7.0
+# For scheduling the signal scanning jobs
+schedule>=1.1.0
+# For Parquet support in pandas
+pyarrow>=10.0.0
