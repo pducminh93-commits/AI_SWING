@@ -42,10 +42,10 @@ class PPOAgent:
             dist = Categorical(probs)
             action = dist.sample()
             logprob = dist.log_prob(action)
-        self.buffer['states'].append(state)
-        self.buffer['actions'].append(action)
-        self.buffer['logprobs'].append(logprob)
-        return action.item(), logprob
+        self.buffer['states'].append(state.cpu())
+        self.buffer['actions'].append(action.cpu().item())
+        self.buffer['logprobs'].append(logprob.cpu().item())
+        return action.cpu().item(), logprob.cpu().item()
 
     def update(self):
         if not self.buffer['rewards']: return
@@ -57,9 +57,11 @@ class PPOAgent:
         
         rewards = torch.tensor(rewards, dtype=torch.float32)
         rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-7)
-        old_states = torch.cat(self.buffer['states'], dim=0).detach()
-        old_actions = torch.cat(self.buffer['actions'], dim=0).detach()
-        old_logprobs = torch.cat(self.buffer['logprobs'], dim=0).detach()
+        
+        # Stack states properly
+        old_states = torch.stack(self.buffer['states'], dim=0).squeeze(1)
+        old_actions = torch.tensor(self.buffer['actions']).long()
+        old_logprobs = torch.tensor(self.buffer['logprobs']).float()
 
         for _ in range(self.K_epochs):
             logprobs, state_values, dist_entropy = self.evaluate(old_states, old_actions)
@@ -76,4 +78,6 @@ class PPOAgent:
     def evaluate(self, state, action):
         probs, state_values = self.policy(state)
         dist = Categorical(probs)
-        return dist.log_prob(action), state_values.squeeze(), dist.entropy()
+        if isinstance(action, (int, float)):
+            action = torch.tensor(action, dtype=torch.long).to(probs.device)
+        return dist.log_prob(action), state_values.squeeze(-1), dist.entropy()

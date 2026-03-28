@@ -199,29 +199,16 @@ def fetch_all_data(symbol, intervals, lookback_days, raw_dir):
             df_klines.to_csv(file_path, encoding='utf-8-sig')
             logger.info(f"✅ Lưu {file_path}")
 
-    # Fetch and save Open Interest
-    oi_df = fetch_open_interest(symbol, lookback_days, client)
-    if oi_df is not None:
-        oi_path = Path(raw_dir) / f"{symbol}_oi.csv"
-        oi_df.to_csv(oi_path, encoding='utf-8-sig')
-        logger.info(f"✅ Lưu {oi_path}")
-
-    # Fetch and save Funding Rate
-    funding_df = fetch_funding_rate(symbol, lookback_days, client)
-    if funding_df is not None:
-        funding_path = Path(raw_dir) / f"{symbol}_funding.csv"
-        funding_df.to_csv(funding_path, encoding='utf-8-sig')
-        logger.info(f"✅ Lưu {funding_path}")
-
-    # OI và funding rate không phụ thuộc vào interval, chỉ cần kéo 1 lần
+    # Fetch and save Open Interest (chỉ 1 lần)
     df_oi = fetch_open_interest(symbol, lookback_days, client)
     if df_oi is not None:
-        file_path = Path(raw_dir) / f"{symbol}_oi.csv"
-        df_oi.to_csv(file_path, encoding='utf-8-sig')
-        logger.info(f"✅ Lưu {file_path}")
+        oi_path = Path(raw_dir) / f"{symbol}_oi.csv"
+        df_oi.to_csv(oi_path, encoding='utf-8-sig')
+        logger.info(f"✅ Lưu {oi_path}")
 
+    # Fetch and save Funding Rate (chỉ 1 lần)
     df_funding = fetch_funding_rate(symbol, lookback_days, client)
     if df_funding is not None:
-        file_path = Path(raw_dir) / f"{symbol}_funding.csv"
-        df_funding.to_csv(file_path, encoding='utf-8-sig')
-        logger.info(f"✅ Lưu {file_path}")
+        funding_path = Path(raw_dir) / f"{symbol}_funding.csv"
+        df_funding.to_csv(funding_path, encoding='utf-8-sig')
+        logger.info(f"✅ Lưu {funding_path}")

@@ -8,6 +8,10 @@ class SignalParser:
     Tuân thủ tuyệt đối quy tắc: Ký quỹ cố định (Fixed Margin) và Đòn bẩy động (Dynamic Leverage).
     """
     def __init__(self, config_path: str = "config/settings.yaml"):
+        import os
+        if not os.path.isabs(config_path):
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            config_path = os.path.join(base_dir, config_path)
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
         
