@@ -46,7 +46,7 @@ AI_SWING-main/
 
 ```bash
 # Clone repository
-git clone <repo-url>
+git clone https://github.com/pducminh93-commits/AI_SWING.git
 cd AI_SWING-main
 
 # Tạo virtual environment
@@ -67,6 +67,7 @@ Chỉnh sửa file `.env` để thêm API keys Binance:
 ```
 BINANCE_API_KEY=your_api_key
 BINANCE_SECRET_KEY=your_secret_key
+TELEGRAM_BOT_TOKEN=your_bot_token
 ```
 
 ## Cách Chạy
@@ -179,6 +180,19 @@ Output bao gồm:
 2. **Gating Network**: Học trọng số combine các expert
 3. **RL Agent**: Policy gradient cho quyết định trading
 4. **Memory Buffer**: Experience replay cho training
+
+## Checklist Tiến Độ Dự Án
+
+- [x] Phân tích yêu cầu dự án
+- [x] Thiết kế kiến trúc hệ thống
+- [x] Xây dựng core AI (gating, memory, RL agent, parser)
+- [x] Phát triển các expert models (GRU, CNN, MLP)
+- [x] Xây dựng pipeline xử lý dữ liệu
+- [x] Tạo môi trường mô phỏng và reward function
+- [x] Tích hợp frontend (Telegram bot)
+- [x] Huấn luyện và lưu mô hình
+- [x] Kiểm thử và đánh giá hiệu năng
+- [x] Viết tài liệu hướng dẫn
 
 ## Disclaimer
 
